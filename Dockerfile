@@ -59,6 +59,9 @@ COPY data/mirflickr_test/* /home/data/
 ### copy hadoop config
 COPY hadoop-conf/* /opt/hadoop/etc/hadoop/
 
+### copy notebook
+COPY tfm_tensoronspark.ipynb /notebooks/
+
 ### copy wakeUp.sh
 COPY wakeUp.sh /home
 RUN chmod +x /home/wakeUp.sh 
