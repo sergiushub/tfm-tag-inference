@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[172]:
+# In[32]:
 
 
 import numpy as np
@@ -18,7 +18,7 @@ def run(cmd):
     return p.stdout.read()
 
 
-# In[173]:
+# In[33]:
 
 
 # All the constants to run this notebook.
@@ -28,7 +28,7 @@ image_file = ""
 num_top_predictions = 5
 DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz'
 
-IMG_URL = 'hdfs://localhost:9000/data/im*'
+IMG_URL = 'hdfs://localhost:9000/data/im1.jpg'
 TAG_URL = 'hdfs://localhost:9000/data/tags/tags1*.txt'
 
 # The number of images to process.
@@ -36,7 +36,7 @@ image_batch_size = 3
 max_content = 1000L
 
 
-# In[174]:
+# In[34]:
 
 
 def clean_img_rdd(x):
@@ -52,10 +52,10 @@ def read_file_index():
     im = sc.binaryFiles(IMG_URL).map(clean_img_rdd)
     tg = sc.binaryFiles(TAG_URL).map(clean_tags_rdd)
     
-    return im
+    return im.join(tg)
 
 
-# In[175]:
+# In[35]:
 
 
 class NodeLookup(object):
@@ -185,19 +185,20 @@ def maybe_download_and_extract():
         print('Data already downloaded:', filepath, os.stat(filepath))
 
 
-# In[176]:
+# In[36]:
 
 
 maybe_download_and_extract()
 
 
-# In[177]:
+# In[37]:
 
 
 image_data = read_file_index()
+image_data.collect()
 
 
-# In[178]:
+# In[38]:
 
 
 label_lookup_path = os.path.join(model_dir, 'imagenet_2012_challenge_label_map_proto.pbtxt')
@@ -250,13 +251,13 @@ def load_lookup():
 node_lookup = load_lookup()
 
 
-# In[179]:
+# In[39]:
 
 
 node_lookup_bc = sc.broadcast(node_lookup)
 
 
-# In[180]:
+# In[40]:
 
 
 model_path = os.path.join(model_dir, 'classify_image_graph_def.pb')
@@ -264,18 +265,17 @@ with gfile.FastGFile(model_path, 'rb') as f:
     model_data = f.read()
 
 
-# In[181]:
+# In[41]:
 
 
 model_data_bc = sc.broadcast(model_data)
 
 
-# In[182]:
+# In[45]:
 
 
-def run_image(sess, img_id, image, node_lookup):
+def run_image(sess, img_id, image, tags, node_lookup):
 
-    print('ok4')
     scores = []
     
     softmax_tensor = sess.graph.get_tensor_by_name('softmax:0')
@@ -291,30 +291,28 @@ def run_image(sess, img_id, image, node_lookup):
             human_string = node_lookup[node_id]
         score = predictions[node_id]
         scores.append((human_string, score))
-    return (img_id, image, scores)
+    return (img_id, tags, scores)
 
 def apply_batch(image_entry):
     img_id = image_entry[0]
-    image = image_entry[1]
+    image = image_entry[1][0]
+    tags = image_entry[1][1]
     with tf.Graph().as_default() as g:
         graph_def = tf.GraphDef()
         graph_def.ParseFromString(model_data_bc.value)
-        print('ok1')
         tf.import_graph_def(graph_def, name='')
-        print('ok2')
         with tf.Session() as sess:
-            print('ok3')
-            labelled = run_image(sess, img_id, image, node_lookup_bc.value)
+            labelled = run_image(sess, img_id, image, tags, node_lookup_bc.value)
             return labelled
 
 
-# In[183]:
+# In[46]:
 
 
 labelled_images = image_data.map(apply_batch)
 
 
-# In[184]:
+# In[47]:
 
 
 local_labelled_images = labelled_images.collect()
