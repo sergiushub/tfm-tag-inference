@@ -1,0 +1,8 @@
+abstract
+yellow
+white
+bus
+lines
+telaviv
+diagonal
+graphic

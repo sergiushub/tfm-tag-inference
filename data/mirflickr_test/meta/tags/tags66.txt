@@ -1,0 +1,10 @@
+porte
+fenêtre
+arras
+window
+door
+decay
+500x500
+geo:lat=50291834
+geo:lon=2781515
+geotagged

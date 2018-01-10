@@ -1,0 +1,12 @@
+bilbao
+1116
+cielo
+sky
+polarizado
+reflejo
+reflection
+sanidad
+estrenandomiregalito
+geotagged
+geo:lat=43260867
+geo:lon=2935705
