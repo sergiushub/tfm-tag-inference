@@ -29,12 +29,15 @@ image_file = ""
 num_top_predictions = 5
 DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz'
 
-IMG_URL = 'hdfs://localhost:9000/data/im*.jpg'
-TAG_URL = 'hdfs://localhost:9000/data/tags/tags*.txt'
+IMG_URL = 'hdfs://localhost:9000/data/im10*.jpg'
+TAG_URL = 'hdfs://localhost:9000/data/meta/tags/tags10*.txt'
 
 
-# In[3]:
+# In[12]:
 
+
+# list of most used tags ordered from the most to the less used
+most_used_tags = sc.binaryFiles(TAG_URL).flatMap(lambda x:x[1].splitlines()).map(lambda x:(x,1)).reduceByKey(lambda x,y:x+y).sortBy(lambda x:x[1],ascending=False).take(1000)
 
 def clean_img_rdd(x):
     key = os.path.basename(x[0]).split('.')[0][2:]    
@@ -42,7 +45,13 @@ def clean_img_rdd(x):
 
 def clean_tags_rdd(x):
     key = os.path.basename(x[0]).split('.')[0][4:]  
-    value = x[1].splitlines()
+    tags = x[1].splitlines()
+    value = list()
+    for tag in tags:
+        for pos, val in enumerate(most_used_tags):
+            if val[0] == tag:
+                value.append(pos)    
+                break
     return (key,value)
     
 def read_file_index():
@@ -52,7 +61,7 @@ def read_file_index():
     return im.join(tg)
 
 
-# In[4]:
+# In[13]:
 
 
 def maybe_download_and_extract():
@@ -72,20 +81,16 @@ def maybe_download_and_extract():
     else:
         print('Data already downloaded:', filepath, os.stat(filepath))
 
-
-# In[5]:
-
-
 maybe_download_and_extract()
 
 
-# In[6]:
+# In[14]:
 
 
 image_data = read_file_index()
 
 
-# In[7]:
+# In[15]:
 
 
 label_lookup_path = os.path.join(model_dir, 'imagenet_2012_challenge_label_map_proto.pbtxt')
@@ -138,28 +143,20 @@ def load_lookup():
 
 node_lookup = load_lookup()
 
-
-# In[8]:
-
-
 node_lookup_bc = sc.broadcast(node_lookup)
 
 
-# In[9]:
+# In[16]:
 
 
 model_path = os.path.join(model_dir, 'classify_image_graph_def.pb')
 with gfile.FastGFile(model_path, 'rb') as f:
     model_data = f.read()
-
-
-# In[10]:
-
-
+    
 model_data_bc = sc.broadcast(model_data)
 
 
-# In[11]:
+# In[17]:
 
 
 def run_image(sess, img_id, image, tags, node_lookup):
@@ -195,14 +192,15 @@ def apply_inference(image_entry):
             return labelled
 
 
-# In[12]:
+# In[18]:
 
 
 # filter the images without tags -> x[1][1] are tags
+# apply inference in images
 inference_images = image_data.filter(lambda x: x[1][1]).map(apply_inference)
 
 
-# In[13]:
+# In[19]:
 
 
 local_inference_images = inference_images.collect()
@@ -210,7 +208,7 @@ local_inference_images = inference_images.collect()
 local_inference_images
 
 
-# In[15]:
+# In[46]:
 
 
 def merge_tag_as_label(categories_and_tags):
@@ -236,12 +234,23 @@ def merge_inference_as_label(categories_and_tags):
 #inference_as_label = inference_images.flatMap(merge_inference_as_label).aggregateByKey((),(lambda x,y: x+(y,)),(lambda x,y: x+(y,))).collect()
 
 
-# In[20]:
+# In[47]:
 
 
-inference_as_label = inference_images.flatMap(merge_inference_as_label).filter(lambda x:x[1][1]>0.2).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
+# merge images and tags
+# filters inferences with more than 50% of probability
+inference_as_label = inference_images.flatMap(merge_inference_as_label).filter(lambda x:x[1][1]>0.5).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
 
 inference_as_label
+
+
+# In[ ]:
+
+
+# entrenamos un modelo binario con randomforest para cada categoria de imagen
+model = RandomForest.trainClassifier(sc.parallelize(data), 2, {}, 3, seed=42)
+
+
 
 
 # In[21]:
@@ -250,11 +259,4 @@ inference_as_label
 tag_as_label = inference_images.flatMap(merge_tag_as_label).filter(lambda x:x[1][1]>0.2).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
 
 tag_as_label
-
-
-# In[28]:
-
-
-tg = sc.binaryFiles(TAG_URL).flatMap(lambda x:x[1].splitlines()).map(lambda x:(x,1)).reduceByKey(lambda x,y:x+y).filter(lambda x:x[1]>2)
-tg.collect()
 
