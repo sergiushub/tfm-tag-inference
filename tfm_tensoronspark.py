@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[79]:
+# In[1]:
 
 
 import numpy as np
@@ -19,7 +19,7 @@ def run(cmd):
     return p.stdout.read()
 
 
-# In[80]:
+# In[2]:
 
 
 # All the constants to run this notebook.
@@ -29,11 +29,11 @@ image_file = ""
 num_top_predictions = 5
 DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz'
 
-IMG_URL = 'hdfs://localhost:9000/data/im6*.jpg'
-TAG_URL = 'hdfs://localhost:9000/data/tags/tags6*.txt'
+IMG_URL = 'hdfs://localhost:9000/data/im*.jpg'
+TAG_URL = 'hdfs://localhost:9000/data/tags/tags*.txt'
 
 
-# In[81]:
+# In[3]:
 
 
 def clean_img_rdd(x):
@@ -52,7 +52,7 @@ def read_file_index():
     return im.join(tg)
 
 
-# In[82]:
+# In[4]:
 
 
 def maybe_download_and_extract():
@@ -73,19 +73,19 @@ def maybe_download_and_extract():
         print('Data already downloaded:', filepath, os.stat(filepath))
 
 
-# In[83]:
+# In[5]:
 
 
 maybe_download_and_extract()
 
 
-# In[84]:
+# In[6]:
 
 
 image_data = read_file_index()
 
 
-# In[85]:
+# In[7]:
 
 
 label_lookup_path = os.path.join(model_dir, 'imagenet_2012_challenge_label_map_proto.pbtxt')
@@ -139,13 +139,13 @@ def load_lookup():
 node_lookup = load_lookup()
 
 
-# In[86]:
+# In[8]:
 
 
 node_lookup_bc = sc.broadcast(node_lookup)
 
 
-# In[87]:
+# In[9]:
 
 
 model_path = os.path.join(model_dir, 'classify_image_graph_def.pb')
@@ -153,13 +153,13 @@ with gfile.FastGFile(model_path, 'rb') as f:
     model_data = f.read()
 
 
-# In[88]:
+# In[10]:
 
 
 model_data_bc = sc.broadcast(model_data)
 
 
-# In[89]:
+# In[11]:
 
 
 def run_image(sess, img_id, image, tags, node_lookup):
@@ -180,9 +180,9 @@ def run_image(sess, img_id, image, tags, node_lookup):
         score = predictions[node_id]
         #scores.append((human_string, score))
         scores.append((node_id, score))
-    return (img_id, tags, scores)
+    return (tags, scores, img_id)
 
-def apply_batch(image_entry):
+def apply_inference(image_entry):
     img_id = image_entry[0]
     image = image_entry[1][0]
     tags = image_entry[1][1]
@@ -195,84 +195,66 @@ def apply_batch(image_entry):
             return labelled
 
 
-# In[90]:
+# In[12]:
 
 
 # filter the images without tags -> x[1][1] are tags
-labelled_images = image_data.filter(lambda x: x[1][1]).map(apply_batch)
+inference_images = image_data.filter(lambda x: x[1][1]).map(apply_inference)
 
 
-# In[91]:
+# In[13]:
 
 
-local_labelled_images = labelled_images.collect()
+local_inference_images = inference_images.collect()
 
-local_labelled_images
-
-
-# In[69]:
+local_inference_images
 
 
-from pyspark.ml.feature import Word2Vec
-
-# Input data: Each row is a bag of words from a sentence or document.
-documentDF = spark.createDataFrame([
-    ("Hi I heard about Spark".split(" "), ),
-    ("I wish Java could use case classes".split(" "), ),
-    ("Logistic regression models are neat".split(" "), )
-], ["text"])
-
-# Learn a mapping from words to Vectors.
-word2Vec = Word2Vec(vectorSize=3, minCount=0, inputCol="text", outputCol="result")
-model = word2Vec.fit(documentDF)
-
-result = model.transform(documentDF)
-for row in result.collect():
-    text, vector = row
-    print("Text: [%s] => \nVector: %s\n" % (", ".join(text), str(vector)))
+# In[15]:
 
 
-# In[71]:
+def merge_tag_as_label(categories_and_tags):
+    tags = categories_and_tags[0]
+    categories = categories_and_tags[1]
+    paired = []
+    for tag in tags:
+        for category in categories:
+            paired.append((tag,category))
+    return paired
+
+def merge_inference_as_label(categories_and_tags):
+    tags = categories_and_tags[0]
+    categories = categories_and_tags[1]
+    paired = []
+    for category in categories:
+        for tag in tags:
+            paired.append((category[0],(tag,category[1])))
+    return paired
 
 
-from pyspark.ml.feature import HashingTF, IDF, Tokenizer
-
-sentenceData = spark.createDataFrame([
-    (0.0, "Hi I heard about Spark"),
-    (0.0, "I wish Java could use case classes"),
-    (1.0, "Logistic regression models are neat")
-], ["label", "sentence"])
-
-tokenizer = Tokenizer(inputCol="sentence", outputCol="words")
-wordsData = tokenizer.transform(sentenceData)
-
-hashingTF = HashingTF(inputCol="words", outputCol="rawFeatures", numFeatures=20)
-featurizedData = hashingTF.transform(wordsData)
-# alternatively, CountVectorizer can also be used to get term frequency vectors
-
-idf = IDF(inputCol="rawFeatures", outputCol="features")
-idfModel = idf.fit(featurizedData)
-rescaledData = idfModel.transform(featurizedData)
-
-rescaledData.select("label", "features").show()
+#tag_as_label = inference_images.flatMap(merge_tag_as_label).aggregateByKey((),(lambda x,y: x+(y,)),(lambda x,y: x+(y,))).collect()
+#inference_as_label = inference_images.flatMap(merge_inference_as_label).aggregateByKey((),(lambda x,y: x+(y,)),(lambda x,y: x+(y,))).collect()
 
 
-# In[78]:
+# In[20]:
 
 
-from pyspark.ml.feature import CountVectorizer
+inference_as_label = inference_images.flatMap(merge_inference_as_label).filter(lambda x:x[1][1]>0.2).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
 
-# Input data: Each row is a bag of words with a ID.
-df = spark.createDataFrame([
-    (0, "a b c d".split(" ")),
-    (1, "a b b c a".split(" "))
-], ["id", "words"])
+inference_as_label
 
-# fit a CountVectorizerModel from the corpus.
-cv = CountVectorizer(inputCol="words", outputCol="features", vocabSize=4, minDF=2.0)
 
-model = cv.fit(df)
+# In[21]:
 
-result = model.transform(df)
-result.show(truncate=False)
+
+tag_as_label = inference_images.flatMap(merge_tag_as_label).filter(lambda x:x[1][1]>0.2).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
+
+tag_as_label
+
+
+# In[28]:
+
+
+tg = sc.binaryFiles(TAG_URL).flatMap(lambda x:x[1].splitlines()).map(lambda x:(x,1)).reduceByKey(lambda x,y:x+y).filter(lambda x:x[1]>2)
+tg.collect()
 
