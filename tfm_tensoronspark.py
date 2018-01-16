@@ -14,12 +14,16 @@ import sys
 import tarfile
 from subprocess import Popen, PIPE, STDOUT
 
+from pyspark.mllib.linalg import SparseVector
+from pyspark.mllib.regression import LabeledPoint
+from pyspark.mllib.tree import RandomForest
+
 def run(cmd):
     p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
     return p.stdout.read()
 
 
-# In[2]:
+# In[72]:
 
 
 # All the constants to run this notebook.
@@ -32,12 +36,15 @@ DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-
 IMG_URL = 'hdfs://localhost:9000/data/im10*.jpg'
 TAG_URL = 'hdfs://localhost:9000/data/meta/tags/tags10*.txt'
 
+NUM_FEATURES = 1000
+NUM_MIN_OBSERVATIONS = 3
 
-# In[12]:
+
+# In[3]:
 
 
 # list of most used tags ordered from the most to the less used
-most_used_tags = sc.binaryFiles(TAG_URL).flatMap(lambda x:x[1].splitlines()).map(lambda x:(x,1)).reduceByKey(lambda x,y:x+y).sortBy(lambda x:x[1],ascending=False).take(1000)
+most_used_tags = sc.binaryFiles(TAG_URL).flatMap(lambda x:x[1].splitlines()).map(lambda x:(x,1)).reduceByKey(lambda x,y:x+y).sortBy(lambda x:x[1],ascending=False).take(NUM_FEATURES)
 
 def clean_img_rdd(x):
     key = os.path.basename(x[0]).split('.')[0][2:]    
@@ -61,7 +68,7 @@ def read_file_index():
     return im.join(tg)
 
 
-# In[13]:
+# In[4]:
 
 
 def maybe_download_and_extract():
@@ -84,13 +91,13 @@ def maybe_download_and_extract():
 maybe_download_and_extract()
 
 
-# In[14]:
+# In[5]:
 
 
 image_data = read_file_index()
 
 
-# In[15]:
+# In[6]:
 
 
 label_lookup_path = os.path.join(model_dir, 'imagenet_2012_challenge_label_map_proto.pbtxt')
@@ -146,7 +153,7 @@ node_lookup = load_lookup()
 node_lookup_bc = sc.broadcast(node_lookup)
 
 
-# In[16]:
+# In[7]:
 
 
 model_path = os.path.join(model_dir, 'classify_image_graph_def.pb')
@@ -156,7 +163,7 @@ with gfile.FastGFile(model_path, 'rb') as f:
 model_data_bc = sc.broadcast(model_data)
 
 
-# In[17]:
+# In[8]:
 
 
 def run_image(sess, img_id, image, tags, node_lookup):
@@ -192,7 +199,7 @@ def apply_inference(image_entry):
             return labelled
 
 
-# In[18]:
+# In[9]:
 
 
 # filter the images without tags -> x[1][1] are tags
@@ -200,7 +207,7 @@ def apply_inference(image_entry):
 inference_images = image_data.filter(lambda x: x[1][1]).map(apply_inference)
 
 
-# In[19]:
+# In[10]:
 
 
 local_inference_images = inference_images.collect()
@@ -208,7 +215,23 @@ local_inference_images = inference_images.collect()
 local_inference_images
 
 
-# In[46]:
+# In[58]:
+
+
+ids = []
+values = []
+names = []
+for id,val in enumerate(most_used_tags):
+    ids.append(id)
+    values.append(val[1])
+    names.append(val[0])
+    
+import matplotlib.pyplot as plt
+plt.plot(ids, values, 'g')
+plt.show()
+
+
+# In[33]:
 
 
 def merge_tag_as_label(categories_and_tags):
@@ -229,10 +252,109 @@ def merge_inference_as_label(categories_and_tags):
             paired.append((category[0],(tag,category[1])))
     return paired
 
-
 #tag_as_label = inference_images.flatMap(merge_tag_as_label).aggregateByKey((),(lambda x,y: x+(y,)),(lambda x,y: x+(y,))).collect()
 #inference_as_label = inference_images.flatMap(merge_inference_as_label).aggregateByKey((),(lambda x,y: x+(y,)),(lambda x,y: x+(y,))).collect()
 
+#def merge_inference_as_label_v2(categories_and_tags):
+#    tags = categories_and_tags[0]
+#    categories = categories_and_tags[1]
+#    paired = []
+#    values = [0] * NUM_FEATURES
+#    for category in categories:
+#        category_id = category[0]
+#        category_prob = category[1]
+#        for tag in tags:
+#            values[tag]=category_prob
+#        paired.append((category_id,values))
+#    return paired
+
+
+# In[80]:
+
+
+# creamos un vector de features con cada categoria como label
+def merge_inference_as_label_v3(categories_and_tags):
+    tags = categories_and_tags[0]
+    categories = categories_and_tags[1]
+    paired = []
+    for category in categories:
+        category_id = category[0]
+        category_prob = category[1]
+        paired.append((category_id,[SparseVector(NUM_FEATURES, sorted(tags), [category_prob]*len(tags))])) 
+    return paired
+
+
+# merge images and tags
+inference_as_label_dataset = inference_images.flatMap(merge_inference_as_label_v3).reduceByKey(lambda x,y: x+y)
+
+
+# In[104]:
+
+
+categories_to_train = inference_images.flatMap(lambda x:x[1]).map(lambda x:(x[0],1)).reduceByKey(lambda x,y:x+y).filter(lambda x:x[1]>NUM_MIN_OBSERVATIONS).sortBy(lambda x:x[0]).map(lambda x:x[0]).collect()
+
+def merge_inference_as_label_v4(categories_and_tags):
+    tags = categories_and_tags[0]
+    categories = categories_and_tags[1]
+    paired = []
+    for category in categories:
+        category_id = category[0]
+        category_prob = category[1]
+        paired.append((category_id,SparseVector(NUM_FEATURES, sorted(tags), [category_prob]*len(tags))))
+    return paired
+
+observation_data = inference_images.flatMap(merge_inference_as_label_v4)
+
+observation_data.collect()
+
+
+# In[98]:
+
+
+categories_to_train = [330]
+
+
+# In[105]:
+
+
+def merge_inference_as_labeledpoint(observation,category_target):
+    if observation[0] == category_target:
+        return LabeledPoint(1,observation[1])
+    else:
+        return LabeledPoint(0,observation[1])
+
+def train_randomforest_model(dataset):
+    
+    model = RandomForest.trainClassifier(dataset, 2, {}, 3, seed=42)
+    
+    return model
+
+models = []
+
+for category_target in categories_to_train:
+    print("Training category {} ({})".format(node_lookup[category_target],category_target))
+    observation_data_labeled = observation_data.map(lambda x: merge_inference_as_labeledpoint(x,category_target)).collect()
+    print(observation_data_labeled)
+    models.append(category_target,train_randomforest_model(observation_data_labeled))
+    
+print(models)
+
+
+# # PREDICTION FOR THE FUTURE
+# 
+
+# In[ ]:
+
+
+def score(model):
+    predictions = model.predict(test_data.map(lambda x: x.features))
+    labels_and_preds = test_data.map(lambda x: x.label).zip(predictions)
+    accuracy = labels_and_preds.filter(lambda x: x[0] == x[1]).count() / float(test_data.count())
+    return accuracy
+
+
+# # Old approach:
+# 
 
 # In[47]:
 
@@ -242,15 +364,6 @@ def merge_inference_as_label(categories_and_tags):
 inference_as_label = inference_images.flatMap(merge_inference_as_label).filter(lambda x:x[1][1]>0.5).aggregateByKey(list(),(lambda x,y: x+list((y,))),(lambda i,j: i+j)).filter(lambda x:len(x[1])>1).collect()
 
 inference_as_label
-
-
-# In[ ]:
-
-
-# entrenamos un modelo binario con randomforest para cada categoria de imagen
-model = RandomForest.trainClassifier(sc.parallelize(data), 2, {}, 3, seed=42)
-
-
 
 
 # In[21]:
