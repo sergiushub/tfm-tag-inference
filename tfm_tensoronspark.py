@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[1]:
+# In[19]:
 
 
 import numpy as np
@@ -17,13 +17,14 @@ from subprocess import Popen, PIPE, STDOUT
 from pyspark.mllib.linalg import SparseVector
 from pyspark.mllib.regression import LabeledPoint
 from pyspark.mllib.tree import RandomForest
+from pyspark.mllib.evaluation import BinaryClassificationMetrics
 
 def run(cmd):
     p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=STDOUT, close_fds=True)
     return p.stdout.read()
 
 
-# In[72]:
+# In[2]:
 
 
 # All the constants to run this notebook.
@@ -207,15 +208,7 @@ def apply_inference(image_entry):
 inference_images = image_data.filter(lambda x: x[1][1]).map(apply_inference)
 
 
-# In[10]:
-
-
-local_inference_images = inference_images.collect()
-
-local_inference_images
-
-
-# In[58]:
+# In[11]:
 
 
 ids = []
@@ -231,7 +224,7 @@ plt.plot(ids, values, 'g')
 plt.show()
 
 
-# In[33]:
+# In[12]:
 
 
 def merge_tag_as_label(categories_and_tags):
@@ -269,26 +262,7 @@ def merge_inference_as_label(categories_and_tags):
 #    return paired
 
 
-# In[80]:
-
-
-# creamos un vector de features con cada categoria como label
-def merge_inference_as_label_v3(categories_and_tags):
-    tags = categories_and_tags[0]
-    categories = categories_and_tags[1]
-    paired = []
-    for category in categories:
-        category_id = category[0]
-        category_prob = category[1]
-        paired.append((category_id,[SparseVector(NUM_FEATURES, sorted(tags), [category_prob]*len(tags))])) 
-    return paired
-
-
-# merge images and tags
-inference_as_label_dataset = inference_images.flatMap(merge_inference_as_label_v3).reduceByKey(lambda x,y: x+y)
-
-
-# In[104]:
+# In[13]:
 
 
 categories_to_train = inference_images.flatMap(lambda x:x[1]).map(lambda x:(x[0],1)).reduceByKey(lambda x,y:x+y).filter(lambda x:x[1]>NUM_MIN_OBSERVATIONS).sortBy(lambda x:x[0]).map(lambda x:x[0]).collect()
@@ -305,16 +279,16 @@ def merge_inference_as_label_v4(categories_and_tags):
 
 observation_data = inference_images.flatMap(merge_inference_as_label_v4)
 
-observation_data.collect()
+#observation_data.collect()
 
 
-# In[98]:
+# In[15]:
 
 
-categories_to_train = [330]
+categories_to_train = [330,364]
 
 
-# In[105]:
+# In[79]:
 
 
 def merge_inference_as_labeledpoint(observation,category_target):
@@ -329,32 +303,65 @@ def train_randomforest_model(dataset):
     
     return model
 
+
+def score(model,test_data):
+    predictions = model.predict(test_data.map(lambda x: x.features))
+    lables = test_data.map(lambda x: x.label)
+    labels_and_preds= predictions.zip(lables)
+    metrics = BinaryClassificationMetrics(labels_and_preds)
+    
+    return (metrics.areaUnderPR,metrics.areaUnderROC)
+
 models = []
 
 for category_target in categories_to_train:
     print("Training category {} ({})".format(node_lookup[category_target],category_target))
-    observation_data_labeled = observation_data.map(lambda x: merge_inference_as_labeledpoint(x,category_target)).collect()
-    print(observation_data_labeled)
-    models.append(category_target,train_randomforest_model(observation_data_labeled))
+    observation_data_labeled = observation_data.map(lambda x: merge_inference_as_labeledpoint(x,category_target))
+    train_data,test_data = observation_data_labeled.randomSplit([0.7,0.3])
+    model = train_randomforest_model(train_data)
+    models.append((category_target,model,score(model,test_data)))
     
-print(models)
 
 
-# # PREDICTION FOR THE FUTURE
+# In[80]:
+
+
+models
+
+
+# In[76]:
+
+
+lis = [(1.0,1.0),(1.0,1.0),(1.0,1.0),(1.0,0.0),(0.0,0.0),(0.0,0.0),(0.0,0.0),(0.0,0.0),(1.0,1.0),(1.0,1.0),(1.0,1.0),(0.0,1.0),(0.0,1.0),(0.0,1.0),(0.0,1.0),(0.0,1.0),(0.0,1.0),(0.0,0.0),(0.0,0.0),(0.0,0.0),(0.0,0.0)]
+res = sc.parallelize(lis)
+hola = BinaryClassificationMetrics(res)
+hola.areaUnderPR
+
+hola.areaUnderROC
+
+
+# # Old approach:
 # 
 
 # In[ ]:
 
 
-def score(model):
-    predictions = model.predict(test_data.map(lambda x: x.features))
-    labels_and_preds = test_data.map(lambda x: x.label).zip(predictions)
-    accuracy = labels_and_preds.filter(lambda x: x[0] == x[1]).count() / float(test_data.count())
-    return accuracy
+# in this case I 
+# creamos un vector de features con cada categoria como label
+def merge_inference_as_label_v3(categories_and_tags):
+    tags = categories_and_tags[0]
+    categories = categories_and_tags[1]
+    paired = []
+    for category in categories:
+        category_id = category[0]
+        category_prob = category[1]
+        paired.append((category_id,[SparseVector(NUM_FEATURES, sorted(tags), [category_prob]*len(tags))])) 
+    return paired
 
 
-# # Old approach:
-# 
+# merge images and tags
+inference_as_label_dataset = inference_images.flatMap(merge_inference_as_label_v3).reduceByKey(lambda x,y: x+y)
+
 
 # In[47]:
 
